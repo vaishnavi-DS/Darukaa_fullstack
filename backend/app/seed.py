@@ -2,25 +2,36 @@ import json
 from sqlalchemy.orm import Session
 from app import models, auth, analytics_engine
 
+
 def seed_initial_data(db: Session):
-    # Check if database already has users/projects
-    if db.query(models.User).count() > 0:
-        return
+    print("Checking Darukaa.Earth initial data...")
 
-    print("Seeding initial Darukaa.Earth carbon and biodiversity projects...")
-
-    # 1. Seed Admin User
-    admin_user = models.User(
-        email="admin@darukaa.earth",
-        hashed_password=auth.get_password_hash("admin123"),
-        full_name="Dr. Elena Vance (Lead Sustainability Admin)",
-        role="admin"
+    # ---------------------------------------------------------
+    # 1. Get or create the admin user
+    # ---------------------------------------------------------
+    admin_user = (
+        db.query(models.User)
+        .filter(models.User.email == "admin@darukaa.earth")
+        .first()
     )
-    db.add(admin_user)
-    db.commit()
-    db.refresh(admin_user)
 
-    # 2. Seed Projects & Sites
+    if not admin_user:
+        print("Creating admin user...")
+
+        admin_user = models.User(
+            email="admin@darukaa.earth",
+            hashed_password=auth.get_password_hash("admin123"),
+            full_name="Dr. Elena Vance (Lead Sustainability Admin)",
+            role="admin"
+        )
+
+        db.add(admin_user)
+        db.commit()
+        db.refresh(admin_user)
+
+    # ---------------------------------------------------------
+    # 2. Initial projects
+    # ---------------------------------------------------------
     projects_data = [
         {
             "name": "Western Ghats Rainforest Canopy Restoration",
@@ -121,7 +132,29 @@ def seed_initial_data(db: Session):
         }
     ]
 
+    # ---------------------------------------------------------
+    # 3. Add only projects that don't already exist
+    # ---------------------------------------------------------
     for proj_item in projects_data:
+
+        existing_project = (
+            db.query(models.Project)
+            .filter(models.Project.code == proj_item["code"])
+            .first()
+        )
+
+        if existing_project:
+            print(
+                f"Project already exists: "
+                f"{proj_item['name']} ({proj_item['code']})"
+            )
+            continue
+
+        print(
+            f"Adding project: "
+            f"{proj_item['name']} ({proj_item['code']})"
+        )
+
         project = models.Project(
             name=proj_item["name"],
             code=proj_item["code"],
@@ -132,12 +165,35 @@ def seed_initial_data(db: Session):
             status=proj_item["status"],
             created_by_id=admin_user.id
         )
+
         db.add(project)
         db.commit()
         db.refresh(project)
 
+        # -----------------------------------------------------
+        # 4. Add project sites
+        # -----------------------------------------------------
         for site_item in proj_item["sites"]:
-            area_ha = analytics_engine.calculate_polygon_area_hectares(site_item["geometry"])
+
+            existing_site = (
+                db.query(models.Site)
+                .filter(
+                    models.Site.site_code == site_item["site_code"]
+                )
+                .first()
+            )
+
+            if existing_site:
+                print(
+                    f"Site already exists: "
+                    f"{site_item['name']}"
+                )
+                continue
+
+            area_ha = analytics_engine.calculate_polygon_area_hectares(
+                site_item["geometry"]
+            )
+
             site = models.Site(
                 project_id=project.id,
                 name=site_item["name"],
@@ -147,19 +203,33 @@ def seed_initial_data(db: Session):
                 status=site_item["status"],
                 carbon_density_per_ha=site_item["carbon_density_per_ha"]
             )
+
             db.add(site)
             db.commit()
             db.refresh(site)
 
-            # Generate historical analytics
-            analytics_entries = analytics_engine.generate_historical_analytics(
-                site_id=site.id,
-                area_ha=area_ha,
-                carbon_density=site.carbon_density_per_ha
+            # -------------------------------------------------
+            # 5. Generate historical analytics
+            # -------------------------------------------------
+            analytics_entries = (
+                analytics_engine.generate_historical_analytics(
+                    site_id=site.id,
+                    area_ha=area_ha,
+                    carbon_density=site.carbon_density_per_ha
+                )
             )
+
             for entry in analytics_entries:
                 db.add(models.SiteAnalytics(**entry))
 
             db.commit()
 
-    print("Seed process completed successfully!")
+    # ---------------------------------------------------------
+    # 6. Final count
+    # ---------------------------------------------------------
+    project_count = db.query(models.Project).count()
+
+    print(
+        f"Seed process completed. "
+        f"Total projects in database: {project_count}"
+    )
